@@ -10,11 +10,24 @@
 -- in their `before_each`.
 
 local cwd = vim.fn.getcwd()
-vim.opt.rtp:prepend(cwd .. "/neovim-plugin")
+
+-- Resolve the plugin root. Two valid layouts:
+--   1. `<cwd>/neovim-plugin/...` — run from the parent ezstack repo where
+--      this plugin is a submodule.
+--   2. `<cwd>/...` — run from the ezstack.nvim plugin repo directly.
+-- Both work; the runtimepath needs to point at whichever layout has
+-- `lua/ezstack/`.
+local plugin_root
+if vim.fn.isdirectory(cwd .. "/neovim-plugin/lua/ezstack") == 1 then
+  plugin_root = cwd .. "/neovim-plugin"
+else
+  plugin_root = cwd
+end
+vim.opt.rtp:prepend(plugin_root)
 
 -- Make `require("tests.helpers")` work regardless of where nvim was
 -- launched from.
-package.path = cwd .. "/neovim-plugin/?.lua;" .. package.path
+package.path = plugin_root .. "/?.lua;" .. package.path
 
 -- Locate `plenary.nvim`. Probed, in order:
 --   1. $EZSTACK_PLENARY — explicit override

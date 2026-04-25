@@ -6,8 +6,8 @@ local M = {}
 
 --- All top-level subcommands. Used for both dispatch and completion.
 local SUBCOMMAND_NAMES = {
-  "actions", "agent", "amend", "commit", "config", "delete", "diff", "down",
-  "goto", "graph", "list", "log", "menu", "new", "pr", "push", "rename",
+  "actions", "agent", "amend", "commit", "config", "delete", "diff", "doctor",
+  "down", "goto", "graph", "list", "log", "menu", "new", "pr", "push", "rename",
   "reparent", "stack", "status", "sync", "unstack", "up",
 }
 
@@ -154,20 +154,24 @@ end
 --- `:Ezs push [-s|--stack] [-f|--force]`
 subcommands["push"] = function(args)
   local is_stack = false
-  local is_force = false
+  local opts = { force = false, verify = false, all_remotes = false }
   for _, a in ipairs(args) do
     if a == "-s" or a == "--stack" then
       is_stack = true
     elseif a == "-f" or a == "--force" then
-      is_force = true
+      opts.force = true
+    elseif a == "--verify" then
+      opts.verify = true
+    elseif a == "--all-remotes" then
+      opts.all_remotes = true
     end
   end
   if is_stack then
-    vim.notify(is_force and "Force-pushing stack..." or "Pushing stack...", vim.log.levels.INFO)
-    cli.push_stack({ force = is_force }, notify_cb("Push stack", "Stack pushed"))
+    vim.notify(opts.force and "Force-pushing stack..." or "Pushing stack...", vim.log.levels.INFO)
+    cli.push_stack(opts, notify_cb("Push stack", "Stack pushed"))
   else
-    vim.notify(is_force and "Force-pushing branch..." or "Pushing branch...", vim.log.levels.INFO)
-    cli.push({ force = is_force }, notify_cb("Push", "Branch pushed"))
+    vim.notify(opts.force and "Force-pushing branch..." or "Pushing branch...", vim.log.levels.INFO)
+    cli.push(opts, notify_cb("Push", "Branch pushed"))
   end
 end
 
@@ -175,6 +179,22 @@ end
 subcommands["pr"] = function(args)
   local sub = args[1]
   local rest = vim.list_slice(args, 2)
+
+  -- Both `pr --draft-all` and `pr draft-all` are accepted. The CLI's
+  -- top-level form is `--draft-all`, which gets re-routed inside ezs to
+  -- `prDraftAll`. We expose the same behavior through either spelling.
+  if sub == "--draft-all" or sub == "draft-all" then
+    vim.ui.select({ "Yes", "No" }, {
+      prompt = "Create draft PRs for every branch in the current stack without one?",
+    }, function(choice)
+      if choice ~= "Yes" then
+        return
+      end
+      vim.notify("Creating draft PRs across stack...", vim.log.levels.INFO)
+      cli.pr_draft_all(notify_cb("PR draft-all", "Draft PRs created"))
+    end)
+    return
+  end
 
   if sub == "create" then
     local title = table.concat(rest, " ")
@@ -245,9 +265,23 @@ subcommands["pr"] = function(args)
   end
 end
 
---- `:Ezs delete [branch]`
+--- `:Ezs delete [branch] [--cascade] [-f|--force]`
+---
+--- --cascade also removes every descendant branch in the stack (deepest
+--- first). --force lets the cascade past dirty descendants — use sparingly.
 subcommands["delete"] = function(args)
-  local branch = args[1]
+  local opts = { cascade = false, force = false }
+  local positional = {}
+  for _, a in ipairs(args) do
+    if a == "--cascade" then
+      opts.cascade = true
+    elseif a == "-f" or a == "--force" then
+      opts.force = true
+    else
+      table.insert(positional, a)
+    end
+  end
+  local branch = positional[1]
   if not branch then
     cli.list_stacks(function(err, stacks)
       if err then
@@ -268,22 +302,29 @@ subcommands["delete"] = function(args)
         if not choice then
           return
         end
-        M._confirm_delete(choice)
+        M._confirm_delete(choice, opts)
       end)
     end, { force = true })
     return
   end
-  M._confirm_delete(branch)
+  M._confirm_delete(branch, opts)
 end
 
-function M._confirm_delete(name)
-  vim.ui.select({ "Yes", "No" }, {
-    prompt = 'Delete branch "' .. name .. '" and its worktree?',
-  }, function(choice)
+function M._confirm_delete(name, opts)
+  opts = opts or {}
+  local prompt = 'Delete branch "' .. name .. '" and its worktree?'
+  if opts.cascade then
+    prompt = 'Cascade-delete "' .. name .. '" AND every descendant branch?'
+  end
+  vim.ui.select({ "Yes", "No" }, { prompt = prompt }, function(choice)
     if choice ~= "Yes" then
       return
     end
-    cli.delete_branch(name, notify_cb("Delete", 'Deleted branch "' .. name .. '"'))
+    local label = opts.cascade and "Cascade delete" or "Delete"
+    local success = opts.cascade
+      and ('Cascade-deleted "' .. name .. '" and its descendants')
+      or ('Deleted branch "' .. name .. '"')
+    cli.delete_branch(name, opts, notify_cb(label, success))
   end)
 end
 
@@ -417,7 +458,20 @@ end
 
 --- `:Ezs goto [branch]`
 subcommands["goto"] = function(args)
-  local target = args[1]
+  -- `:Ezs goto --search <substring>` does a fuzzy substring match against
+  -- every worktree branch. If exactly one matches, jump straight in; if
+  -- multiple match, fall through to the regular picker filtered to the
+  -- match set.
+  local search_query
+  local positional = {}
+  for i, a in ipairs(args) do
+    if a == "--search" then
+      search_query = args[i + 1]
+    elseif args[i - 1] ~= "--search" then
+      table.insert(positional, a)
+    end
+  end
+  local target = positional[1]
 
   cli.list_stacks(function(err, stacks)
     if err then
@@ -441,6 +495,42 @@ subcommands["goto"] = function(args)
 
     if #branch_names == 0 then
       vim.notify("No branches with worktrees found", vim.log.levels.INFO)
+      return
+    end
+
+    if search_query and search_query ~= "" then
+      local q = search_query:lower()
+      local matches = {}
+      for name, wt in pairs(branch_map) do
+        if name:lower():find(q, 1, true) then
+          table.insert(matches, { name = name, wt = wt })
+        end
+      end
+      if #matches == 0 then
+        vim.notify('No branch matched "' .. search_query .. '"', vim.log.levels.WARN)
+        return
+      end
+      if #matches == 1 then
+        ezstack.goto_worktree(matches[1].wt)
+        return
+      end
+      local labels = {}
+      for _, m in ipairs(matches) do
+        table.insert(labels, m.name)
+      end
+      vim.ui.select(labels, {
+        prompt = 'Branches matching "' .. search_query .. '":',
+      }, function(choice)
+        if not choice then
+          return
+        end
+        for _, m in ipairs(matches) do
+          if m.name == choice then
+            ezstack.goto_worktree(m.wt)
+            return
+          end
+        end
+      end)
       return
     end
 
@@ -708,15 +798,86 @@ subcommands["config"] = function(args)
     end)
     return
   end
+  if args[1] == "export" then
+    -- `:Ezs config export <path>` — if no path given, prompt for one.
+    -- Token is redacted by the CLI before write; file mode is 0600.
+    local target = args[2]
+    if not target or target == "" then
+      vim.ui.input({
+        prompt = "Export config to: ",
+        default = vim.fn.getcwd() .. "/ezstack-config.json",
+        completion = "file",
+      }, function(input)
+        if not input or input == "" then
+          return
+        end
+        cli.config_export(input, function(err)
+          if err then
+            vim.notify("Config export failed: " .. err, vim.log.levels.ERROR)
+          else
+            vim.notify("Config exported to " .. input, vim.log.levels.INFO)
+          end
+        end)
+      end)
+      return
+    end
+    cli.config_export(target, function(err)
+      if err then
+        vim.notify("Config export failed: " .. err, vim.log.levels.ERROR)
+      else
+        vim.notify("Config exported to " .. target, vim.log.levels.INFO)
+      end
+    end)
+    return
+  end
+  if args[1] == "import" then
+    local source = args[2]
+    if not source or source == "" then
+      vim.ui.input({ prompt = "Import config from: ", completion = "file" }, function(input)
+        if not input or input == "" then
+          return
+        end
+        M._confirm_config_import(input)
+      end)
+      return
+    end
+    M._confirm_config_import(source)
+    return
+  end
   -- Pass-through for `config set ...`
   local cli_args = { "config" }
   vim.list_extend(cli_args, args)
   cli.run_in_terminal(cli_args)
 end
 
+function M._confirm_config_import(path)
+  vim.ui.select({ "Yes", "No" }, {
+    prompt = "Replace your current ezstack config with " .. path .. "?",
+  }, function(choice)
+    if choice ~= "Yes" then
+      return
+    end
+    cli.config_import(path, function(err)
+      if err then
+        vim.notify("Config import failed: " .. err, vim.log.levels.ERROR)
+      else
+        vim.notify("Config imported", vim.log.levels.INFO)
+      end
+    end)
+  end)
+end
+
 --- `:Ezs menu` — open the interactive ezs menu in a terminal.
 subcommands["menu"] = function()
   cli.run_in_terminal({ "menu" })
+end
+
+--- `:Ezs doctor` — health check (toolchain + config validation).
+--- Runs in a terminal so users can scroll the (coloured) output. doctor
+--- exits non-zero when problems are detected, which is information the
+--- user wants to see, so we don't filter the exit code.
+subcommands["doctor"] = function(_args)
+  cli.run_in_terminal({ "doctor" })
 end
 
 --- `:Ezs agent ...` — agent subcommand.
@@ -1023,21 +1184,24 @@ function M.complete(arglead, cmdline, _cursorpos)
   if parts[2] == "pr" and #parts <= 3 then
     return vim.tbl_filter(function(s)
       return s:find(arglead, 1, true) == 1
-    end, { "create", "update", "merge", "draft", "stack", "open" })
+    end, { "create", "update", "merge", "draft", "stack", "open", "draft-all" })
   end
 
   -- :Ezs sync <tab>
   if parts[2] == "sync" and #parts <= 3 then
     return vim.tbl_filter(function(s)
       return s:find(arglead, 1, true) == 1
-    end, { "-s", "-c", "-a", "-p", "-C", "--continue", "--dry-run", "--merge", "--rebase" })
+    end, {
+      "-s", "-c", "-a", "-p", "-C", "--continue", "--dry-run", "--merge",
+      "--rebase", "--stats", "--squash",
+    })
   end
 
   -- :Ezs push <tab>
   if parts[2] == "push" and #parts <= 3 then
     return vim.tbl_filter(function(s)
       return s:find(arglead, 1, true) == 1
-    end, { "-s", "-f" })
+    end, { "-s", "-f", "--verify", "--all-remotes" })
   end
 
   -- :Ezs goto/delete/reparent/log <branch>
@@ -1056,7 +1220,7 @@ function M.complete(arglead, cmdline, _cursorpos)
   if parts[2] == "config" and #parts <= 3 then
     return vim.tbl_filter(function(s)
       return s:find(arglead, 1, true) == 1
-    end, { "show", "set" })
+    end, { "show", "set", "export", "import" })
   end
 
   return {}

@@ -328,17 +328,29 @@ function M.push(opts, callback)
   if opts.force then
     table.insert(args, "--force")
   end
+  if opts.verify then
+    table.insert(args, "--verify")
+  end
+  if opts.all_remotes then
+    table.insert(args, "--all-remotes")
+  end
   run_async(args, on_change(callback))
 end
 
 --- Push entire stack.
----@param opts? { force: boolean }
+---@param opts? { force: boolean, verify: boolean, all_remotes: boolean }
 ---@param callback fun(err: string|nil)
 function M.push_stack(opts, callback)
   opts = opts or {}
   local args = { "-y", "push", "-s" }
   if opts.force then
     table.insert(args, "--force")
+  end
+  if opts.verify then
+    table.insert(args, "--verify")
+  end
+  if opts.all_remotes then
+    table.insert(args, "--all-remotes")
   end
   run_async(args, on_change(callback))
 end
@@ -402,11 +414,28 @@ function M.pr_stack(callback)
   run_async({ "-y", "pr", "stack" }, on_change(callback))
 end
 
---- Delete a branch and its worktree.
+--- Delete a branch and its worktree. Optional `opts.cascade` removes the
+--- branch's descendants too — matches the CLI's `--cascade` semantics
+--- (deepest-first, aborts on dirty descendants unless `opts.force`).
 ---@param name string Branch name
+---@param opts? { cascade: boolean, force: boolean }
 ---@param callback fun(err: string|nil)
-function M.delete_branch(name, callback)
-  run_async({ "-y", "delete", name }, on_change(callback))
+function M.delete_branch(name, opts, callback)
+  -- Backwards-compat: older callers pass `(name, callback)` with no opts.
+  if type(opts) == "function" and callback == nil then
+    callback = opts
+    opts = nil
+  end
+  opts = opts or {}
+  local args = { "-y", "delete" }
+  if opts.force then
+    table.insert(args, "--force")
+  end
+  if opts.cascade then
+    table.insert(args, "--cascade")
+  end
+  table.insert(args, name)
+  run_async(args, on_change(callback))
 end
 
 --- Reparent a branch onto a new parent.
@@ -472,6 +501,35 @@ end
 ---@param callback fun(err: string|nil, config: string|nil)
 function M.config_show(callback)
   run_async({ "config", "show" }, callback)
+end
+
+--- Export the global ezstack config (token redacted) to `file_path`.
+---@param file_path string Destination file
+---@param callback fun(err: string|nil, stdout: string|nil)
+function M.config_export(file_path, callback)
+  run_async({ "config", "export", file_path }, callback)
+end
+
+--- Import a previously-exported config file. -y skips the
+--- "overwrite current config?" confirmation.
+---@param file_path string Source file
+---@param callback fun(err: string|nil, stdout: string|nil)
+function M.config_import(file_path, callback)
+  run_async({ "-y", "config", "import", file_path }, on_change(callback))
+end
+
+--- Create draft PRs for every branch in the current stack without one.
+---@param callback fun(err: string|nil, stdout: string|nil)
+function M.pr_draft_all(callback)
+  run_async({ "-y", "pr", "--draft-all" }, on_change(callback))
+end
+
+--- Run `ezs goto --search <query>`. Returns the CLI's `cd <path>` line so the
+--- caller can navigate to the matched worktree, or an error if no match.
+---@param query string Substring to search for
+---@param callback fun(err: string|nil, stdout: string|nil)
+function M.goto_search(query, callback)
+  run_async({ "goto", "--search", query }, callback)
 end
 
 --- Show commit log for a branch (vs its parent).
