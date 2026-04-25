@@ -30,6 +30,89 @@ describe("ezstack.commands", function()
     end
   end)
 
+  describe(":Ezs config set value parsing", function()
+    -- Regression for the strict-arg change in the CLI: `config set` now
+    -- requires the value as a single argv slot. The plugin's `:Ezs` arg
+    -- splitter is whitespace-only, so multi-word values had to be re-joined
+    -- by parse_config_set to survive the trip. These cases pin both the
+    -- happy path and the quote-stripping behavior.
+    local p
+
+    before_each(function()
+      p = cmds._parse_config_set
+    end)
+
+    it("returns key + value for a single-token value", function()
+      local k, v = p("set agent_command claude")
+      assert.equals("agent_command", k)
+      assert.equals("claude", v)
+    end)
+
+    it("joins multi-token unquoted value by whitespace", function()
+      -- Mirrors the pre-strict CLI behavior so users who relied on
+      -- `:Ezs config set agent_command claude --foo` still get
+      -- "claude --foo" stored as one value.
+      local k, v = p("set agent_command claude --dangerously-skip-permissions")
+      assert.equals("agent_command", k)
+      assert.equals("claude --dangerously-skip-permissions", v)
+    end)
+
+    it("strips surrounding double quotes", function()
+      local k, v = p('set agent_command "claude --foo"')
+      assert.equals("agent_command", k)
+      assert.equals("claude --foo", v)
+    end)
+
+    it("strips surrounding single quotes", function()
+      local k, v = p("set agent_command 'claude --foo'")
+      assert.equals("agent_command", k)
+      assert.equals("claude --foo", v)
+    end)
+
+    it("preserves embedded quotes inside the value", function()
+      -- Only one outer layer is stripped; embedded quotes survive.
+      local k, v = p('set agent_command "claude \'inner\'"')
+      assert.equals("agent_command", k)
+      assert.equals("claude 'inner'", v)
+    end)
+
+    it("does not strip mismatched quote characters", function()
+      local k, v = p([[set agent_command "claude --foo']])
+      assert.equals("agent_command", k)
+      assert.equals([["claude --foo']], v)
+    end)
+
+    it("returns nil for missing value", function()
+      local k, v = p("set agent_command")
+      assert.is_nil(k)
+      assert.is_nil(v)
+    end)
+
+    it("returns nil for missing key and value", function()
+      local k, v = p("set")
+      assert.is_nil(k)
+      assert.is_nil(v)
+    end)
+
+    it("returns nil when input doesn't start with 'set'", function()
+      local k, v = p("show agent_command")
+      assert.is_nil(k)
+      assert.is_nil(v)
+    end)
+
+    it("trims trailing whitespace from value", function()
+      local k, v = p("set agent_command claude   ")
+      assert.equals("agent_command", k)
+      assert.equals("claude", v)
+    end)
+
+    it("handles paths with spaces when quoted", function()
+      local k, v = p([[set worktree_base_dir "/path with spaces/wt"]])
+      assert.equals("worktree_base_dir", k)
+      assert.equals("/path with spaces/wt", v)
+    end)
+  end)
+
   describe(":Ezs diff passthrough detection", function()
     local p
 

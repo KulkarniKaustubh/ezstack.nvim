@@ -116,6 +116,7 @@ All commands are exposed under `:Ezs`. Tab completion is available for subcomman
 | `:Ezs down` | Navigate to child branch |
 | `:Ezs log [branch]` | Show commits in a branch since its parent |
 | `:Ezs config [show]` | Show ezs configuration in a scratch buffer |
+| `:Ezs config set <key> <value>` | Set a config key. Multi-word values may be quoted, e.g. `:Ezs config set agent_command "claude --flag"` |
 | `:Ezs config export [path]` | Export the global ezstack config (token redacted, mode 0600) |
 | `:Ezs config import [path]` | Import a previously-exported config (prompts before overwriting) |
 | `:Ezs doctor` | Run `ezs doctor` (toolchain + config health check) in a terminal |

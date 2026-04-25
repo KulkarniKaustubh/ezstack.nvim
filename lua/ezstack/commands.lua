@@ -786,8 +786,41 @@ subcommands["log"] = function(args)
   end)
 end
 
+--- Split a `config set <key> <value>` raw text into {key, value}, respecting
+--- a single layer of "..." or '...' around the value so users can pass
+--- multi-word values like `agent_command "claude --flag"`. The CLI requires
+--- exactly one argv slot for the value (it no longer joins trailing tokens),
+--- so we must collapse the remainder to a single string here. Returns nil
+--- when key or value is missing.
+local function parse_config_set(raw)
+  -- Strip the leading "set" token + whitespace.
+  local rest = raw:gsub("^%s*set%s+", "", 1)
+  if rest == "" or rest == raw then
+    return nil
+  end
+  local key = rest:match("^(%S+)")
+  if not key then
+    return nil
+  end
+  local value = rest:sub(#key + 1):gsub("^%s+", ""):gsub("%s+$", "")
+  if value == "" then
+    return nil
+  end
+  -- Strip a single layer of matching quotes around the entire value.
+  local first, last = value:sub(1, 1), value:sub(-1)
+  if (first == '"' and last == '"') or (first == "'" and last == "'") then
+    if #value >= 2 then
+      value = value:sub(2, -2)
+    end
+  end
+  return key, value
+end
+
+-- Exposed for tests; see commands_spec.lua.
+M._parse_config_set = parse_config_set
+
 --- `:Ezs config [show]` — show ezs config.
-subcommands["config"] = function(args)
+subcommands["config"] = function(args, raw_rest)
   if args[1] == nil or args[1] == "show" then
     cli.config_show(function(err, out)
       if err then
@@ -844,7 +877,22 @@ subcommands["config"] = function(args)
     M._confirm_config_import(source)
     return
   end
-  -- Pass-through for `config set ...`
+  -- Pass-through for `config set <key> <value>`. The CLI now requires the
+  -- value as a single argv slot; build it from raw_rest so quoted multi-word
+  -- values (e.g. `agent_command "claude --flag"`) survive the trip.
+  if args[1] == "set" then
+    local key, value = parse_config_set(raw_rest or "")
+    if not key or not value then
+      vim.notify(
+        'Usage: :Ezs config set <key> <value>\nFor multi-word values, wrap in quotes — e.g. :Ezs config set agent_command "claude --flag"',
+        vim.log.levels.ERROR
+      )
+      return
+    end
+    cli.run_in_terminal({ "config", "set", key, value })
+    return
+  end
+  -- Generic pass-through for any other `config <subcommand>`.
   local cli_args = { "config" }
   vim.list_extend(cli_args, args)
   cli.run_in_terminal(cli_args)
