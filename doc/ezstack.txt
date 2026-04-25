@@ -95,19 +95,30 @@ All commands are exposed under the |:Ezs| user command.
 :Ezs sync -c             Sync only the current branch.
 :Ezs sync --continue     Continue an in-progress sync (headless).
 :Ezs sync --dry-run      Show the sync plan as JSON in a scratch buffer.
+:Ezs sync --stats        Print a commits-per-branch summary after sync.
+:Ezs sync --squash       Squash each child to one commit before rebase.
 :Ezs push                Push the current branch.
 :Ezs push -s             Push the entire stack.
 :Ezs push -f             Force-push.
+:Ezs push --verify       Require ~/.ezstack/hooks/pre-push to exist and pass.
+:Ezs push --all-remotes  Push to origin AND any configured fork remote.
 :Ezs pr create [title]   Create a pull request.
 :Ezs pr update           Push changes to the existing PR.
 :Ezs pr merge            Merge the PR (prompts for method).
 :Ezs pr draft            Toggle draft status.
 :Ezs pr stack            Update stack info in all PR descriptions.
 :Ezs pr open             Open the current branch's PR in the browser.
+:Ezs pr draft-all        Create draft PRs for every branch in the stack
+                         that doesn't have one yet (prompts before).
 :Ezs delete [branch]     Delete a branch and its worktree.
+:Ezs delete [b] --cascade Delete a branch AND every descendant
+                         (deepest-first; aborts if any descendant has
+                         uncommitted changes unless `-f`/`--force`).
 :Ezs reparent [b] [p]    Change a branch's parent (interactive if omitted).
 :Ezs rename [hash] [n]   Name or rename a stack.
 :Ezs goto [branch]       Switch to a branch worktree.
+:Ezs goto --search {q}   Fuzzy substring jump. Unique match goes
+                         straight; multiple matches drop into a picker.
 :Ezs up                  Navigate to the parent branch.
 :Ezs down                Navigate to a child branch.
 :Ezs diff                Show `parent...HEAD` in a scratch split (async).
@@ -122,6 +133,14 @@ All commands are exposed under the |:Ezs| user command.
 :Ezs unstack [branch]    Remove a branch from tracking.
 :Ezs log [branch]        Show commits in a branch since its parent.
 :Ezs config [show]       Show ezs configuration.
+:Ezs config export [path] Export the global ezstack config (token
+                         redacted, file written `0600`). Prompts for
+                         the path if omitted.
+:Ezs config import [path] Import a previously-exported config file.
+                         Prompts for confirmation before overwriting
+                         the current config.
+:Ezs doctor              Run `ezs doctor` (toolchain + config health
+                         check) in a terminal.
 :Ezs menu                Open the interactive ezs menu.
 :Ezs agent               Launch AI agent with stack context.
 :Ezs agent feature {desc}  Build a feature with the agent.

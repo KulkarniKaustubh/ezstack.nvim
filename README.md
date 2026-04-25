@@ -83,15 +83,20 @@ All commands are exposed under `:Ezs`. Tab completion is available for subcomman
 | `:Ezs sync -c` | Sync the current branch only |
 | `:Ezs sync --continue` | Continue an in-progress sync (after resolving conflicts) |
 | `:Ezs sync --dry-run` | Show the sync plan as JSON in a scratch buffer |
+| `:Ezs sync --stats` | Print a commits-per-branch summary after sync |
+| `:Ezs sync --squash` | Squash each child to one commit before rebase |
 | `:Ezs push` | Push current branch |
 | `:Ezs push -s` | Push entire stack |
 | `:Ezs push -f` | Force-push (combine with `-s` for stack force-push) |
+| `:Ezs push --verify` | Require `~/.ezstack/hooks/pre-push` to exist and pass |
+| `:Ezs push --all-remotes` | Push to origin AND any configured fork remote |
 | `:Ezs pr create [title]` | Create a pull request |
 | `:Ezs pr update` | Update PR description |
 | `:Ezs pr merge` | Merge PR (prompts for method) |
 | `:Ezs pr draft` | Toggle PR draft status |
 | `:Ezs pr stack` | Update stack info in all PRs |
 | `:Ezs pr open` | Open the current branch's PR in the browser |
+| `:Ezs pr draft-all` | Create draft PRs for every branch in the stack without one |
 | `:Ezs diff` | Show diff vs parent branch in a scratch split (async) |
 | `:Ezs diff <branch>` | Show `<branch>...HEAD` in a scratch split |
 | `:Ezs diff -- <opts>` | Forward to `ezs diff` (supports `--stat`, `--json`, ...) |
@@ -100,15 +105,20 @@ All commands are exposed under `:Ezs`. Tab completion is available for subcomman
 | `:Ezs commit [opts]` | Commit and auto-sync child branches (terminal) |
 | `:Ezs amend [opts]` | Amend last commit and auto-sync children (args forwarded to `ezs amend`) |
 | `:Ezs delete [branch]` | Delete a branch and worktree |
+| `:Ezs delete [branch] --cascade` | Delete a branch AND every descendant (deepest-first) |
 | `:Ezs reparent [branch] [parent]` | Change branch parent |
 | `:Ezs rename [hash] [name]` | Name or rename a stack |
 | `:Ezs stack [branch] [parent]` | Add a branch to a stack |
 | `:Ezs unstack [branch]` | Remove a branch from tracking |
 | `:Ezs goto [branch]` | Switch to a branch worktree |
+| `:Ezs goto --search <query>` | Fuzzy substring jump; unique match goes straight, multiple drop into a picker |
 | `:Ezs up` | Navigate to parent branch |
 | `:Ezs down` | Navigate to child branch |
 | `:Ezs log [branch]` | Show commits in a branch since its parent |
 | `:Ezs config [show]` | Show ezs configuration in a scratch buffer |
+| `:Ezs config export [path]` | Export the global ezstack config (token redacted, mode 0600) |
+| `:Ezs config import [path]` | Import a previously-exported config (prompts before overwriting) |
+| `:Ezs doctor` | Run `ezs doctor` (toolchain + config health check) in a terminal |
 | `:Ezs menu` | Open the interactive ezs menu (terminal) |
 | `:Ezs agent` | Launch AI agent with stack context (terminal) |
 | `:Ezs agent feature "desc"` | Launch agent to build a feature (terminal) |
