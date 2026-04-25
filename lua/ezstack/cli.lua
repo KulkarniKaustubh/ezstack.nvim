@@ -91,7 +91,12 @@ local function run_async(args, callback)
   local cmd = { cli_path() }
   vim.list_extend(cmd, args)
 
-  vim.system(cmd, { text = true, cwd = cwd() }, function(obj)
+  -- vim.system() throws synchronously (ENOENT) when the binary isn't on
+  -- PATH, which would propagate out of setup() and crash the plugin on
+  -- machines without `ezs` installed. The whole point of the async API
+  -- is graceful handling, so wrap the spawn in pcall and surface a
+  -- spawn failure through the callback contract instead.
+  local ok, sys_err = pcall(vim.system, cmd, { text = true, cwd = cwd() }, function(obj)
     vim.schedule(function()
       if obj.code ~= 0 then
         local err = vim.trim(obj.stderr or "")
@@ -104,6 +109,14 @@ local function run_async(args, callback)
       end
     end)
   end)
+  if not ok then
+    -- Defer so the caller's callback always fires asynchronously, matching
+    -- the success path's vim.schedule semantics. Otherwise tests that depend
+    -- on async ordering get fooled by a synchronous error path.
+    vim.schedule(function()
+      callback(tostring(sys_err), nil)
+    end)
+  end
 end
 
 --- Run a command asynchronously, parse JSON output, call back with (err, data).

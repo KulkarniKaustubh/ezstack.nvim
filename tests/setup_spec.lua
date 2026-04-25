@@ -40,6 +40,48 @@ describe("ezstack.setup", function()
     assert.is_true(fired)
   end)
 
+  -- Regression test: vim.system() throws synchronously with ENOENT when the
+  -- target binary isn't on PATH (Neovim 0.10+ behavior). setup() calls
+  -- cli.is_available() during initialization to warn the user when ezs is
+  -- missing — that warn path must not itself crash the plugin. Without the
+  -- pcall guard in cli.run_async, the spawn error propagates out of setup()
+  -- and breaks the plugin (and the headless test suite) on any machine
+  -- without `ezs` installed.
+  it("does not crash when the ezs binary is missing", function()
+    local cli = require("ezstack.cli")
+    local orig_system = vim.system
+    -- Simulate ENOENT: pretend the binary isn't on PATH. vim.system in
+    -- Neovim 0.10+ throws this synchronously when libuv can't spawn.
+    vim.system = function(_cmd, _opts, _on_exit)
+      error("vim/_core/system.lua:0: ENOENT: no such file or directory (cmd): 'ezs'")
+    end
+
+    local setup_ok, setup_err = pcall(function()
+      ezstack.setup({ welcome = false })
+    end)
+
+    -- is_available's callback contract must still hold under spawn failure:
+    -- fire with `false` rather than throwing. Test it directly while the
+    -- stub is still installed so we exercise the same crash path setup() hit.
+    local got_callback = false
+    local got_value
+    cli.is_available(function(available)
+      got_callback = true
+      got_value = available
+    end)
+    -- run_async defers the failure callback via vim.schedule; pump the
+    -- event loop briefly so the deferred fire actually runs.
+    vim.wait(50, function() return got_callback end)
+
+    -- Restore before final assertions so a failure here can't poison
+    -- subsequent specs even if asserts blow up.
+    vim.system = orig_system
+
+    assert.is_true(setup_ok, "setup() must not propagate vim.system errors: " .. tostring(setup_err))
+    assert.is_true(got_callback, "is_available callback must fire even on spawn failure")
+    assert.is_false(got_value, "is_available should report false when spawn fails")
+  end)
+
   describe("default_keymaps", function()
     before_each(function()
       pcall(vim.keymap.del, "n", "]s")
