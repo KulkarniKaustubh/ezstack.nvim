@@ -7,52 +7,15 @@ local M = {}
 -- Maps bufnr -> { stacks, line_map }
 local _buf_data = {}
 
---- Sort branches topologically (parent before child).
----@param branches table[]
----@param root string
----@return table[]
-local function sort_branches(branches, root)
-  -- Build children map
-  local children = {}
-  for _, b in ipairs(branches) do
-    local parent = b.parent
-    if not children[parent] then
-      children[parent] = {}
-    end
-    table.insert(children[parent], b)
-  end
-
-  -- DFS from root
-  local sorted = {}
-  local function walk(parent_name)
-    local kids = children[parent_name]
-    if not kids then
-      return
-    end
-    for _, b in ipairs(kids) do
-      table.insert(sorted, b)
-      walk(b.name)
-    end
-  end
-  walk(root)
-
-  -- If DFS missed any branches (shouldn't happen), append them
-  if #sorted < #branches then
-    local seen = {}
-    for _, b in ipairs(sorted) do
-      seen[b.name] = true
-    end
-    for _, b in ipairs(branches) do
-      if not seen[b.name] then
-        table.insert(sorted, b)
-      end
-    end
-  end
-
-  return sorted
-end
-
 --- Render a single stack into lines and highlight data.
+---
+--- Branches are walked depth-first from `stack.root`, and each branch
+--- carries a tree-prefix (`│   ` per level above the leaf, `    ` once a
+--- subtree's last sibling has been emitted) so siblings off the same
+--- parent line up under that parent — the visual matches the `tree`
+--- command and `:Ezs graph`. Branches whose parent chain doesn't reach
+--- `stack.root` are surfaced under an `(orphans)` header instead of being
+--- silently dropped.
 ---@param stack table Stack JSON data
 ---@return string[] lines
 ---@return table[] highlights Array of {line, col_start, col_end, hl_group}
@@ -87,143 +50,187 @@ local function render_stack(stack, line_offset)
     table.insert(lines, "   (empty)")
     table.insert(highlights, { line_offset + #lines - 1, 0, 12, "EzstackBranchMerged" })
     table.insert(line_map, { type = "empty" })
-  else
-    local sorted = sort_branches(branches, stack.root)
+    return lines, highlights, line_map
+  end
 
-    for i, branch in ipairs(sorted) do
-      local is_last = (i == #sorted)
-      local is_current = branch.is_current
-      local is_merged = branch.is_merged
+  -- Emit one branch row at the given tree position. Reused for the
+  -- normal walk and for orphans (which get an empty prefix).
+  local function emit_branch(branch, prefix, connector)
+    local is_current = branch.is_current
+    local is_merged = branch.is_merged
 
-      -- Pointer
-      local pointer = is_current and " > " or "   "
+    -- Pointer (3 chars, always at col 0 so cursorline lines up across depths)
+    local pointer = is_current and " > " or "   "
 
-      -- Connector
+    -- Branch name (truncated)
+    local name = branch.name
+    if #name > 30 then
+      name = name:sub(1, 27) .. "..."
+    end
+    local padded_name = name .. string.rep(" ", math.max(1, 20 - #name))
+
+    -- PR info
+    local pr_text
+    if branch.pr_number and branch.pr_number > 0 then
+      local state = branch.pr_state or ""
+      if state ~= "" then
+        pr_text = string.format("PR #%d [%s]", branch.pr_number, state)
+      else
+        pr_text = string.format("PR #%d", branch.pr_number)
+      end
+    else
+      pr_text = "[no PR]"
+    end
+    local padded_pr = pr_text .. string.rep(" ", math.max(1, 18 - #pr_text))
+
+    -- CI info
+    local ci_text = ""
+    if branch.ci_summary and branch.ci_summary ~= "" then
+      ci_text = "CI: " .. branch.ci_summary
+    elseif branch.ci_state and branch.ci_state ~= "" and branch.ci_state ~= "none" then
+      ci_text = "CI: " .. branch.ci_state
+    end
+    local padded_ci = ci_text .. string.rep(" ", math.max(1, 14 - #ci_text))
+
+    -- Diff stats
+    local diff_text = ""
+    local diff_add_text = ""
+    local diff_del_text = ""
+    if branch.additions or branch.deletions then
+      local adds = branch.additions or 0
+      local dels = branch.deletions or 0
+      diff_add_text = "+" .. adds
+      diff_del_text = "-" .. dels
+      diff_text = diff_add_text .. " " .. diff_del_text
+    end
+    local padded_diff = diff_text ~= "" and (diff_text .. string.rep(" ", math.max(1, 12 - #diff_text))) or ""
+
+    -- Parent info
+    local parent_text = branch.parent and branch.parent ~= "" and ("(→ " .. branch.parent .. ")") or ""
+
+    local line_prefix = pointer .. prefix .. connector
+    local line = line_prefix .. padded_name .. padded_pr .. padded_ci .. padded_diff .. parent_text
+    table.insert(lines, line)
+
+    local ln = line_offset + #lines - 1
+
+    if is_current then
+      table.insert(highlights, { ln, 0, #pointer, "EzstackPointer" })
+    end
+    -- Color the entire tree-drawing region (depth prefix + connector) so
+    -- `│` runners and `├──` connectors share one consistent style.
+    table.insert(highlights, { ln, #pointer, #line_prefix, "EzstackConnector" })
+
+    local name_start = #line_prefix
+    local name_end = name_start + #name
+    if is_merged then
+      table.insert(highlights, { ln, name_start, #line, "EzstackBranchMerged" })
+    elseif is_current then
+      table.insert(highlights, { ln, name_start, name_end, "EzstackBranchCurrent" })
+    else
+      table.insert(highlights, { ln, name_start, name_end, "EzstackBranch" })
+    end
+
+    local pr_start = name_start + #padded_name
+    if branch.pr_number and branch.pr_number > 0 then
+      local pr_hl = "EzstackPR"
+      local state = (branch.pr_state or ""):upper()
+      if state == "DRAFT" then
+        pr_hl = "EzstackPRDraft"
+      elseif state == "MERGED" then
+        pr_hl = "EzstackPRMerged"
+      elseif state == "CLOSED" then
+        pr_hl = "EzstackPRClosed"
+      end
+      table.insert(highlights, { ln, pr_start, pr_start + #pr_text, pr_hl })
+    else
+      table.insert(highlights, { ln, pr_start, pr_start + #pr_text, "EzstackNoPR" })
+    end
+
+    if ci_text ~= "" then
+      local ci_start = pr_start + #padded_pr
+      local ci_hl = "EzstackCIPending"
+      local ci_state = (branch.ci_state or ""):lower()
+      if ci_state == "success" then
+        ci_hl = "EzstackCIPass"
+      elseif ci_state == "failure" then
+        ci_hl = "EzstackCIFail"
+      end
+      table.insert(highlights, { ln, ci_start, ci_start + #ci_text, ci_hl })
+    end
+
+    if diff_text ~= "" then
+      local diff_start = pr_start + #padded_pr + #padded_ci
+      table.insert(highlights, { ln, diff_start, diff_start + #diff_add_text, "EzstackAdditions" })
+      local del_start = diff_start + #diff_add_text + 1
+      table.insert(highlights, { ln, del_start, del_start + #diff_del_text, "EzstackDeletions" })
+    end
+
+    if parent_text ~= "" then
+      local parent_start = #line - #parent_text
+      table.insert(highlights, { ln, parent_start, #line, "EzstackParent" })
+    end
+
+    table.insert(line_map, {
+      type = "branch",
+      stack_hash = stack.hash,
+      branch_name = branch.name,
+      branch = branch,
+    })
+  end
+
+  -- Build parent -> [child] adjacency once, then DFS from the root.
+  local children = {}
+  for _, b in ipairs(branches) do
+    children[b.parent] = children[b.parent] or {}
+    table.insert(children[b.parent], b)
+  end
+
+  local visited = {}
+  local function walk(parent_name, prefix)
+    local kids = children[parent_name] or {}
+    for i, b in ipairs(kids) do
+      if visited[b.name] then
+        -- Defensive: cycles in the parent graph shouldn't happen, but
+        -- never recurse twice into the same branch.
+        goto continue
+      end
+      visited[b.name] = true
+      local is_last = (i == #kids)
       local connector = is_last and "└── " or "├── "
+      emit_branch(b, prefix, connector)
+      walk(b.name, prefix .. (is_last and "    " or "│   "))
+      ::continue::
+    end
+  end
+  walk(stack.root, "")
 
-      -- Branch name (truncated)
-      local name = branch.name
-      if #name > 30 then
-        name = name:sub(1, 27) .. "..."
-      end
-      -- Pad name
-      local padded_name = name .. string.rep(" ", math.max(1, 20 - #name))
-
-      -- PR info
-      local pr_text
-      if branch.pr_number and branch.pr_number > 0 then
-        local state = branch.pr_state or ""
-        if state ~= "" then
-          pr_text = string.format("PR #%d [%s]", branch.pr_number, state)
-        else
-          pr_text = string.format("PR #%d", branch.pr_number)
-        end
-      else
-        pr_text = "[no PR]"
-      end
-      local padded_pr = pr_text .. string.rep(" ", math.max(1, 18 - #pr_text))
-
-      -- CI info
-      local ci_text = ""
-      if branch.ci_summary and branch.ci_summary ~= "" then
-        ci_text = "CI: " .. branch.ci_summary
-      elseif branch.ci_state and branch.ci_state ~= "" and branch.ci_state ~= "none" then
-        ci_text = "CI: " .. branch.ci_state
-      end
-      local padded_ci = ci_text .. string.rep(" ", math.max(1, 14 - #ci_text))
-
-      -- Diff stats
-      local diff_text = ""
-      local diff_add_text = ""
-      local diff_del_text = ""
-      if branch.additions or branch.deletions then
-        local adds = branch.additions or 0
-        local dels = branch.deletions or 0
-        diff_add_text = "+" .. adds
-        diff_del_text = "-" .. dels
-        diff_text = diff_add_text .. " " .. diff_del_text
-      end
-      local padded_diff = diff_text ~= "" and (diff_text .. string.rep(" ", math.max(1, 12 - #diff_text))) or ""
-
-      -- Parent info
-      local parent_text = branch.parent and branch.parent ~= "" and ("(→ " .. branch.parent .. ")") or ""
-
-      local line = pointer .. connector .. padded_name .. padded_pr .. padded_ci .. padded_diff .. parent_text
-      table.insert(lines, line)
-
-      local ln = line_offset + #lines - 1
-
-      -- Highlights
-      if is_current then
-        table.insert(highlights, { ln, 0, #pointer, "EzstackPointer" })
-      end
-      table.insert(highlights, { ln, #pointer, #pointer + #connector, "EzstackConnector" })
-
-      local name_start = #pointer + #connector
-      local name_end = name_start + #name
-      if is_merged then
-        table.insert(highlights, { ln, name_start, #line, "EzstackBranchMerged" })
-      elseif is_current then
-        table.insert(highlights, { ln, name_start, name_end, "EzstackBranchCurrent" })
-      else
-        table.insert(highlights, { ln, name_start, name_end, "EzstackBranch" })
-      end
-
-      -- PR highlight
-      local pr_start = name_start + #padded_name
-      if branch.pr_number and branch.pr_number > 0 then
-        local pr_hl = "EzstackPR"
-        local state = (branch.pr_state or ""):upper()
-        if state == "DRAFT" then
-          pr_hl = "EzstackPRDraft"
-        elseif state == "MERGED" then
-          pr_hl = "EzstackPRMerged"
-        elseif state == "CLOSED" then
-          pr_hl = "EzstackPRClosed"
-        end
-        table.insert(highlights, { ln, pr_start, pr_start + #pr_text, pr_hl })
-      else
-        table.insert(highlights, { ln, pr_start, pr_start + #pr_text, "EzstackNoPR" })
-      end
-
-      -- CI highlight
-      if ci_text ~= "" then
-        local ci_start = pr_start + #padded_pr
-        local ci_hl = "EzstackCIPending"
-        local ci_state = (branch.ci_state or ""):lower()
-        if ci_state == "success" then
-          ci_hl = "EzstackCIPass"
-        elseif ci_state == "failure" then
-          ci_hl = "EzstackCIFail"
-        end
-        table.insert(highlights, { ln, ci_start, ci_start + #ci_text, ci_hl })
-      end
-
-      -- Diff stats highlight
-      if diff_text ~= "" then
-        local diff_start = pr_start + #padded_pr + #padded_ci
-        table.insert(highlights, { ln, diff_start, diff_start + #diff_add_text, "EzstackAdditions" })
-        local del_start = diff_start + #diff_add_text + 1
-        table.insert(highlights, { ln, del_start, del_start + #diff_del_text, "EzstackDeletions" })
-      end
-
-      -- Parent highlight
-      if parent_text ~= "" then
-        local parent_start = #line - #parent_text
-        table.insert(highlights, { ln, parent_start, #line, "EzstackParent" })
-      end
-
-      table.insert(line_map, {
-        type = "branch",
-        stack_hash = stack.hash,
-        branch_name = branch.name,
-        branch = branch,
-      })
+  -- Anything not reached from `stack.root` (legacy/migrating config)
+  -- gets surfaced under an `(orphans)` header instead of vanishing.
+  local orphans = {}
+  for _, b in ipairs(branches) do
+    if not visited[b.name] then
+      table.insert(orphans, b)
+    end
+  end
+  if #orphans > 0 then
+    local orphan_header = "   (orphans — parent not reachable from root)"
+    table.insert(lines, orphan_header)
+    table.insert(highlights, { line_offset + #lines - 1, 0, #orphan_header, "EzstackBranchMerged" })
+    table.insert(line_map, { type = "orphans_header" })
+    for i, b in ipairs(orphans) do
+      local is_last = (i == #orphans)
+      local connector = is_last and "└── " or "├── "
+      emit_branch(b, "", connector)
     end
   end
 
   return lines, highlights, line_map
 end
+
+-- Re-export the local `render_stack` so tests can exercise the rendering
+-- without spinning up the async CLI / buffer machinery in `M.open`.
+M._render_stack = render_stack
 
 --- Get the namespace for ezstack highlights.
 ---@return number
@@ -901,6 +908,9 @@ function M.show_graph()
 end
 
 --- Render a stack tree as plain text lines (for Telescope preview).
+---
+--- Uses the same depth-aware tree walk as `render_stack` so the preview
+--- mirrors what the main viewer shows.
 ---@param stack table Stack JSON data
 ---@param highlight_branch? string Branch name to highlight
 ---@return string[] lines
@@ -916,36 +926,68 @@ function M.render_preview(stack, highlight_branch)
     return lines
   end
 
-  local sorted = sort_branches(branches, stack.root)
-  for i, branch in ipairs(sorted) do
-    local is_last = (i == #sorted)
-    local marker = ""
-    if highlight_branch and branch.name == highlight_branch then
+  local function format_branch(b, prefix, connector)
+    local marker
+    if highlight_branch and b.name == highlight_branch then
       marker = "> "
-    elseif branch.is_current then
+    elseif b.is_current then
       marker = "> "
     else
       marker = "  "
     end
-    local connector = is_last and "└── " or "├── "
-
     local pr_text = ""
-    if branch.pr_number and branch.pr_number > 0 then
-      pr_text = string.format("  PR #%d", branch.pr_number)
-      if branch.pr_state and branch.pr_state ~= "" then
-        pr_text = pr_text .. " [" .. branch.pr_state .. "]"
+    if b.pr_number and b.pr_number > 0 then
+      pr_text = string.format("  PR #%d", b.pr_number)
+      if b.pr_state and b.pr_state ~= "" then
+        pr_text = pr_text .. " [" .. b.pr_state .. "]"
       end
     end
-
     local diff_text = ""
-    if branch.additions or branch.deletions then
-      local adds = branch.additions or 0
-      local dels = branch.deletions or 0
+    if b.additions or b.deletions then
+      local adds = b.additions or 0
+      local dels = b.deletions or 0
       diff_text = string.format("  +%d -%d", adds, dels)
     end
+    local parent_text = b.parent and b.parent ~= "" and ("  (→ " .. b.parent .. ")") or ""
+    return marker .. prefix .. connector .. b.name .. pr_text .. diff_text .. parent_text
+  end
 
-    local parent_text = branch.parent and branch.parent ~= "" and ("  (→ " .. branch.parent .. ")") or ""
-    table.insert(lines, marker .. connector .. branch.name .. pr_text .. diff_text .. parent_text)
+  local children = {}
+  for _, b in ipairs(branches) do
+    children[b.parent] = children[b.parent] or {}
+    table.insert(children[b.parent], b)
+  end
+
+  local visited = {}
+  local function walk(parent_name, prefix)
+    local kids = children[parent_name] or {}
+    for i, b in ipairs(kids) do
+      if visited[b.name] then
+        goto continue
+      end
+      visited[b.name] = true
+      local is_last = (i == #kids)
+      local connector = is_last and "└── " or "├── "
+      table.insert(lines, format_branch(b, prefix, connector))
+      walk(b.name, prefix .. (is_last and "    " or "│   "))
+      ::continue::
+    end
+  end
+  walk(stack.root, "")
+
+  local orphans = {}
+  for _, b in ipairs(branches) do
+    if not visited[b.name] then
+      table.insert(orphans, b)
+    end
+  end
+  if #orphans > 0 then
+    table.insert(lines, "  (orphans — parent not reachable from root)")
+    for i, b in ipairs(orphans) do
+      local is_last = (i == #orphans)
+      local connector = is_last and "└── " or "├── "
+      table.insert(lines, format_branch(b, "", connector))
+    end
   end
 
   return lines

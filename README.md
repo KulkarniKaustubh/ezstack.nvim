@@ -133,14 +133,18 @@ All commands are exposed under `:Ezs`. Tab completion is available for subcomman
 
 ## Stack Viewer
 
-The stack viewer (`:Ezs`) shows all stacks in a styled buffer:
+The stack viewer (`:Ezs`) shows all stacks in a styled buffer. Branches
+are drawn as a `tree(1)`-style hierarchy so siblings off the same parent
+line up underneath it — the same shape `:Ezs graph` uses, with the
+viewer's PR/CI/diff columns layered on top:
 
 ```
  Stack: my-feature [a1b2c3d]                          root: main
  -----------------------------------------------------------------
-   > ├── feature-1     PR #100 [OPEN]    CI: 3/3     +120 -8   (→ main)
-     ├── feature-2     PR #101 [DRAFT]   CI: pending +50 -2    (→ feature-1)
-     └── feature-3     [no PR]                                  (→ feature-1)
+     ├── feature-1     PR #100 [OPEN]    CI: 3/3     +120 -8   (→ main)
+     │   ├── feature-2 PR #101 [DRAFT]   CI: pending +50 -2    (→ feature-1)
+   > │   └── feature-3 [no PR]                                  (→ feature-1)
+     └── hotfix        PR #110 [OPEN]    CI: 1/1     +12 -3    (→ main)
 ```
 
 The viewer is non-modifiable; cursor position is preserved across refreshes.
