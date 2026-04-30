@@ -124,12 +124,19 @@ describe("ezstack.ui._render_stack tree shape", function()
     ui = require("ezstack.ui")
   end)
 
-  -- Strip viewer chrome (header line + "─" separator) so we can assert
-  -- on branch rows directly.
+  -- Strip viewer chrome so we can assert on branch rows directly.
+  -- Anchored on the "─" separator so future header changes don't
+  -- silently mis-skip rows (the previous `for i = 3, #lines` would
+  -- swallow the first branch if anyone added another header line).
   local function branch_rows(lines)
     local rows = {}
-    for i = 3, #lines do
-      table.insert(rows, lines[i])
+    local started = false
+    for _, line in ipairs(lines) do
+      if started then
+        table.insert(rows, line)
+      elseif line:find("─") then
+        started = true
+      end
     end
     return rows
   end
@@ -252,6 +259,77 @@ describe("ezstack.ui._render_stack tree shape", function()
     assert.equals("c", line_map[5].branch_name)
   end)
 
+  it("nests orphan descendants under their orphan ancestor", function()
+    -- Regression: orphans used to render as flat siblings even when one
+    -- was the parent of another. `lost` is unreachable from `main`, and
+    -- `lost-child` chains off `lost` — the second branch should appear
+    -- indented under the first, not next to it.
+    local lines = ui._render_stack({
+      hash = "h1",
+      root = "main",
+      branches = {
+        { name = "ok", parent = "main" },
+        { name = "lost", parent = "ghost" },
+        { name = "lost-child", parent = "lost" },
+      },
+    }, 0)
+    local rows = branch_rows(lines)
+    -- Reachable branch first, then the orphan header, then the orphan
+    -- subtree with `lost-child` indented under `lost`.
+    assert.truthy(rows[1]:find("^   └── ok"), rows[1])
+    assert.truthy(rows[2]:find("orphans"), rows[2])
+    assert.truthy(rows[3]:find("^   └── lost"), rows[3])
+    assert.truthy(rows[4]:find("^       └── lost%-child"), rows[4])
+  end)
+
+  it("emits sibling orphan subtrees with correct connectors", function()
+    -- Two disjoint orphan subtrees — the connector pattern at the
+    -- orphan-root level should mirror the main tree (├── for non-last,
+    -- └── for last) and runners (│) should stay open across the first
+    -- subtree's descendants.
+    local lines = ui._render_stack({
+      hash = "h1",
+      root = "main",
+      branches = {
+        { name = "lost-a", parent = "ghost1" },
+        { name = "lost-a-kid", parent = "lost-a" },
+        { name = "lost-b", parent = "ghost2" },
+      },
+    }, 0)
+    local joined = table.concat(branch_rows(lines), "\n")
+    assert.truthy(joined:find("├── lost%-a"), joined)
+    assert.truthy(joined:find("│   └── lost%-a%-kid"), joined)
+    assert.truthy(joined:find("└── lost%-b"), joined)
+  end)
+
+  it("keeps line_map aligned when an orphan section is present", function()
+    -- The orphan header inserts an extra row; the keymap layer indexes
+    -- by cursor position, so #line_map must still equal #lines.
+    local lines, _, line_map = ui._render_stack({
+      hash = "h1",
+      root = "main",
+      branches = {
+        { name = "ok", parent = "main" },
+        { name = "lost", parent = "ghost" },
+        { name = "lost-child", parent = "lost" },
+      },
+    }, 0)
+    assert.equals(#lines, #line_map)
+    -- Spot-check: the orphan header has its own line_map entry and the
+    -- nested orphan child still maps back to its branch.
+    local seen_header, seen_child = false, false
+    for _, entry in ipairs(line_map) do
+      if entry.type == "orphans_header" then
+        seen_header = true
+      end
+      if entry.type == "branch" and entry.branch_name == "lost-child" then
+        seen_child = true
+      end
+    end
+    assert.is_true(seen_header)
+    assert.is_true(seen_child)
+  end)
+
   it("highlight columns track the depth prefix", function()
     -- After the refactor the connector spans pointer..line_prefix end
     -- (i.e. depth runners + connector), and the branch name starts at
@@ -332,5 +410,22 @@ describe("ezstack.ui.render_preview tree shape", function()
     local joined = table.concat(lines, "\n")
     assert.truthy(joined:find("orphans"))
     assert.truthy(joined:find("stray"))
+  end)
+
+  it("nests orphan descendants in the preview too", function()
+    -- Same nesting fix as the main viewer — preview shares the helper.
+    local lines = ui.render_preview({
+      hash = "h1",
+      root = "main",
+      branches = {
+        { name = "lost", parent = "ghost" },
+        { name = "lost-child", parent = "lost" },
+      },
+    })
+    local joined = table.concat(lines, "\n")
+    -- `lost` at the orphan-root depth, then `lost-child` indented under
+    -- it with a 4-space depth prefix (preview marker is 2 chars wide).
+    assert.truthy(joined:find("└── lost  "), joined)
+    assert.truthy(joined:find("      └── lost%-child"), joined)
   end)
 end)

@@ -7,15 +7,114 @@ local M = {}
 -- Maps bufnr -> { stacks, line_map }
 local _buf_data = {}
 
+--- Walk `branches` as a tree rooted at `root`, returning rows in render
+--- order. Each row carries the depth prefix and connector for its
+--- position so callers only need to format the visible columns.
+---
+--- Branches not reachable from `root` are surfaced as orphan subtrees
+--- rather than dropped: we pick orphan roots whose parent isn't itself
+--- an orphan and DFS from each, so an orphan's descendants nest under
+--- it (`a→ghost`, `b→a` renders as `a` with `b` indented beneath, not
+--- as flat siblings). Isolated cycles (`a→b`, `b→a` with no external
+--- parent) leave no natural top, so we additionally pick the first
+--- still-uncovered branch per cycle as a fallback root — the shared
+--- `visited` set keeps DFS terminating.
+---@param branches table[]
+---@param root string
+---@return table[] rows Array of { branch, prefix, connector, is_orphan }
+local function walk_branch_tree(branches, root)
+  local children = {}
+  for _, b in ipairs(branches) do
+    children[b.parent] = children[b.parent] or {}
+    table.insert(children[b.parent], b)
+  end
+
+  local rows = {}
+  local visited = {}
+
+  local function dfs(parent_name, prefix, is_orphan)
+    local kids = children[parent_name] or {}
+    for i, b in ipairs(kids) do
+      if not visited[b.name] then
+        visited[b.name] = true
+        local is_last = (i == #kids)
+        local connector = is_last and "└── " or "├── "
+        table.insert(rows, {
+          branch = b,
+          prefix = prefix,
+          connector = connector,
+          is_orphan = is_orphan,
+        })
+        dfs(b.name, prefix .. (is_last and "    " or "│   "), is_orphan)
+      end
+    end
+  end
+
+  dfs(root, "", false)
+
+  -- Pick orphan roots in input order: first branches whose parent isn't
+  -- another orphan (the natural tops), then one fallback per isolated
+  -- cycle so every branch is emitted exactly once. `covered` tracks
+  -- which orphans each chosen root will reach via children edges, so we
+  -- don't double-add an interior cycle node.
+  local pending = {}
+  for _, b in ipairs(branches) do
+    if not visited[b.name] then
+      pending[b.name] = true
+    end
+  end
+
+  local covered = {}
+  local function cover(name)
+    if covered[name] then
+      return
+    end
+    covered[name] = true
+    for _, kid in ipairs(children[name] or {}) do
+      if pending[kid.name] then
+        cover(kid.name)
+      end
+    end
+  end
+
+  local orphan_roots = {}
+  for _, b in ipairs(branches) do
+    if pending[b.name] and not pending[b.parent] and not covered[b.name] then
+      table.insert(orphan_roots, b)
+      cover(b.name)
+    end
+  end
+  for _, b in ipairs(branches) do
+    if pending[b.name] and not covered[b.name] then
+      table.insert(orphan_roots, b)
+      cover(b.name)
+    end
+  end
+
+  for i, b in ipairs(orphan_roots) do
+    if not visited[b.name] then
+      visited[b.name] = true
+      local is_last = (i == #orphan_roots)
+      local connector = is_last and "└── " or "├── "
+      table.insert(rows, {
+        branch = b,
+        prefix = "",
+        connector = connector,
+        is_orphan = true,
+      })
+      dfs(b.name, (is_last and "    " or "│   "), true)
+    end
+  end
+
+  return rows
+end
+
 --- Render a single stack into lines and highlight data.
 ---
---- Branches are walked depth-first from `stack.root`, and each branch
---- carries a tree-prefix (`│   ` per level above the leaf, `    ` once a
---- subtree's last sibling has been emitted) so siblings off the same
---- parent line up under that parent — the visual matches the `tree`
---- command and `:Ezs graph`. Branches whose parent chain doesn't reach
---- `stack.root` are surfaced under an `(orphans)` header instead of being
---- silently dropped.
+--- Branch rows come from `walk_branch_tree`, which walks depth-first
+--- from `stack.root` and surfaces unreachable subtrees under an
+--- `(orphans)` header. The renderer here only formats columns and
+--- highlights — the tree shape lives in the helper.
 ---@param stack table Stack JSON data
 ---@return string[] lines
 ---@return table[] highlights Array of {line, col_start, col_end, hl_group}
@@ -179,50 +278,16 @@ local function render_stack(stack, line_offset)
     })
   end
 
-  -- Build parent -> [child] adjacency once, then DFS from the root.
-  local children = {}
-  for _, b in ipairs(branches) do
-    children[b.parent] = children[b.parent] or {}
-    table.insert(children[b.parent], b)
-  end
-
-  local visited = {}
-  local function walk(parent_name, prefix)
-    local kids = children[parent_name] or {}
-    for i, b in ipairs(kids) do
-      if visited[b.name] then
-        -- Defensive: cycles in the parent graph shouldn't happen, but
-        -- never recurse twice into the same branch.
-        goto continue
-      end
-      visited[b.name] = true
-      local is_last = (i == #kids)
-      local connector = is_last and "└── " or "├── "
-      emit_branch(b, prefix, connector)
-      walk(b.name, prefix .. (is_last and "    " or "│   "))
-      ::continue::
+  local emitted_orphan_header = false
+  for _, row in ipairs(walk_branch_tree(branches, stack.root)) do
+    if row.is_orphan and not emitted_orphan_header then
+      local orphan_header = "   (orphans — parent not reachable from root)"
+      table.insert(lines, orphan_header)
+      table.insert(highlights, { line_offset + #lines - 1, 0, #orphan_header, "EzstackBranchMerged" })
+      table.insert(line_map, { type = "orphans_header" })
+      emitted_orphan_header = true
     end
-  end
-  walk(stack.root, "")
-
-  -- Anything not reached from `stack.root` (legacy/migrating config)
-  -- gets surfaced under an `(orphans)` header instead of vanishing.
-  local orphans = {}
-  for _, b in ipairs(branches) do
-    if not visited[b.name] then
-      table.insert(orphans, b)
-    end
-  end
-  if #orphans > 0 then
-    local orphan_header = "   (orphans — parent not reachable from root)"
-    table.insert(lines, orphan_header)
-    table.insert(highlights, { line_offset + #lines - 1, 0, #orphan_header, "EzstackBranchMerged" })
-    table.insert(line_map, { type = "orphans_header" })
-    for i, b in ipairs(orphans) do
-      local is_last = (i == #orphans)
-      local connector = is_last and "└── " or "├── "
-      emit_branch(b, "", connector)
-    end
+    emit_branch(row.branch, row.prefix, row.connector)
   end
 
   return lines, highlights, line_map
@@ -952,42 +1017,13 @@ function M.render_preview(stack, highlight_branch)
     return marker .. prefix .. connector .. b.name .. pr_text .. diff_text .. parent_text
   end
 
-  local children = {}
-  for _, b in ipairs(branches) do
-    children[b.parent] = children[b.parent] or {}
-    table.insert(children[b.parent], b)
-  end
-
-  local visited = {}
-  local function walk(parent_name, prefix)
-    local kids = children[parent_name] or {}
-    for i, b in ipairs(kids) do
-      if visited[b.name] then
-        goto continue
-      end
-      visited[b.name] = true
-      local is_last = (i == #kids)
-      local connector = is_last and "└── " or "├── "
-      table.insert(lines, format_branch(b, prefix, connector))
-      walk(b.name, prefix .. (is_last and "    " or "│   "))
-      ::continue::
+  local emitted_orphan_header = false
+  for _, row in ipairs(walk_branch_tree(branches, stack.root)) do
+    if row.is_orphan and not emitted_orphan_header then
+      table.insert(lines, "  (orphans — parent not reachable from root)")
+      emitted_orphan_header = true
     end
-  end
-  walk(stack.root, "")
-
-  local orphans = {}
-  for _, b in ipairs(branches) do
-    if not visited[b.name] then
-      table.insert(orphans, b)
-    end
-  end
-  if #orphans > 0 then
-    table.insert(lines, "  (orphans — parent not reachable from root)")
-    for i, b in ipairs(orphans) do
-      local is_last = (i == #orphans)
-      local connector = is_last and "└── " or "├── "
-      table.insert(lines, format_branch(b, "", connector))
-    end
+    table.insert(lines, format_branch(row.branch, row.prefix, row.connector))
   end
 
   return lines
