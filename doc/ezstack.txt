@@ -32,7 +32,10 @@ leaving Neovim.
 2. REQUIREMENTS                                         *ezstack-requirements*
 
   * Neovim >= 0.10 (uses |vim.system|, |vim.uv|, |vim.json|).
-  * The `ezs` CLI on $PATH (or set |ezstack-config-cli_path|).
+  * The `ezs` CLI v4.7.0 or newer on $PATH (or set |ezstack-config-cli_path|).
+    The plugin calls v4.7-only flags (--cascade, --draft-all, goto --search,
+    pr stack, config export/import, agent prompt --reset/--repo); older CLIs
+    fail at the call site. Run `ezs upgrade` to refresh.
   * Optional: nvim-telescope/telescope.nvim for fuzzy pickers.
   * Optional: tpope/vim-fugitive for auto-refresh on git operations.
 

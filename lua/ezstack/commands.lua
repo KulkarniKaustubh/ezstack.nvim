@@ -1011,28 +1011,38 @@ function M._agent_prompt(args)
     end
 
     if next(missing_types) then
-      local types_to_reset = vim.tbl_keys(missing_types)
-      local idx = 0
-      local function reset_next()
-        idx = idx + 1
-        if idx > #types_to_reset then
-          open_files()
-          return
+      -- Create the file(s) directly with a starter comment, matching what
+      -- the CLI's ensureInstructionsFile would write. We don't shell to
+      -- `ezs agent prompt --edit` because that spawns $EDITOR (nested
+      -- editor); `--reset` would only delete an existing file. By writing
+      -- locally we avoid both pitfalls and open the buffer in *this* nvim.
+      local function ensure(file_path)
+        local dir = vim.fn.fnamemodify(file_path, ":h")
+        vim.fn.mkdir(dir, "p")
+        local prompt_type = file_path:find("work") and "work" or "feature"
+        local location = is_repo and "Repository" or "Custom"
+        local lines = {
+          "# " .. location .. " instructions for ezs agent (" .. prompt_type .. " session)",
+          "# Lines here are injected into the shipped prompt.",
+        }
+        if location == "Custom" then
+          table.insert(lines, '# To fully override the shipped prompt, add "override: full" as the first line.')
         end
-        local reset_args = { "agent", "prompt", "--reset" }
-        if is_repo then
-          table.insert(reset_args, "--repo")
-        end
-        table.insert(reset_args, types_to_reset[idx])
-        cli.exec(reset_args, function(err)
-          if err then
-            vim.notify("Failed to create prompt files: " .. err, vim.log.levels.ERROR)
-            return
-          end
-          reset_next()
-        end)
+        vim.list_extend(lines, {
+          "#",
+          "# Examples:",
+          "#   - Always run tests before committing",
+          "#   - Use conventional commits (feat:, fix:, etc.)",
+          "#   - This repo uses pnpm, not npm",
+        })
+        vim.fn.writefile(lines, file_path)
       end
-      reset_next()
+      for _, f in ipairs(files) do
+        if vim.fn.filereadable(f) ~= 1 then
+          ensure(f)
+        end
+      end
+      open_files()
     else
       open_files()
     end
