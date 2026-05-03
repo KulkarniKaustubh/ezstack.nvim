@@ -990,9 +990,12 @@ function M._agent_prompt(args)
     local missing_types = {}
     for _, f in ipairs(files) do
       if vim.fn.filereadable(f) ~= 1 then
-        if f:find("work") then
+        -- Match on basename: a parent directory like ~/work/repos/... must
+        -- not flip a feature-prompt path into the "work" bucket.
+        local basename = vim.fn.fnamemodify(f, ":t")
+        if basename:find("work") then
           missing_types["work"] = true
-        elseif f:find("feature") then
+        elseif basename:find("feature") then
           missing_types["feature"] = true
         end
       end
@@ -1019,7 +1022,11 @@ function M._agent_prompt(args)
       local function ensure(file_path)
         local dir = vim.fn.fnamemodify(file_path, ":h")
         vim.fn.mkdir(dir, "p")
-        local prompt_type = file_path:find("work") and "work" or "feature"
+        -- Match on the basename so a parent directory containing "work" or
+        -- "feature" (e.g. ~/work/repos/...) can't misclassify the prompt.
+        -- The CLI writes filenames like agent-work-prompt.md / agent-feature-prompt.md.
+        local basename = vim.fn.fnamemodify(file_path, ":t")
+        local prompt_type = basename:find("work") and "work" or "feature"
         local location = is_repo and "Repository" or "Custom"
         local lines = {
           "# " .. location .. " instructions for ezs agent (" .. prompt_type .. " session)",
