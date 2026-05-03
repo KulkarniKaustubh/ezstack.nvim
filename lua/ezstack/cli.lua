@@ -473,10 +473,13 @@ end
 ---@param callback fun(err: string|nil)
 function M.sync_branch(branch, opts, callback)
   opts = opts or {}
-  local args = { "-y", "sync", "-c" }
+  local args
   if branch and branch ~= "" then
-    -- The CLI auto-detects the branch from cwd; --branch isn't a sync flag.
-    -- Headless single-branch sync uses -c (current branch only).
+    -- `ezs sync -b <branch>` (added in v4.7.x) targets a specific branch
+    -- without requiring the caller to be cd'd into its worktree.
+    args = { "-y", "sync", "-b", branch }
+  else
+    args = { "-y", "sync", "-c" }
   end
   if opts.merge then
     table.insert(args, "--merge")

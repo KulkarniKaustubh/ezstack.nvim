@@ -5,7 +5,7 @@ Neovim plugin for [ezstack](https://github.com/KulkarniKaustubh/ezstack) — man
 ## Requirements
 
 - Neovim **0.10+** (uses `vim.system`, `vim.uv`, `vim.json`)
-- The [`ezs`](https://github.com/KulkarniKaustubh/ezstack) CLI on `$PATH` (the plugin also probes `~/.local/bin`, `~/go/bin`, `$GOBIN`, `$GOPATH/bin`, `/usr/local/bin`, `/opt/homebrew/bin`)
+- The [`ezs`](https://github.com/KulkarniKaustubh/ezstack) CLI **v4.7.0 or newer** on `$PATH` (the plugin also probes `~/.local/bin`, `~/go/bin`, `$GOBIN`, `$GOPATH/bin`, `/usr/local/bin`, `/opt/homebrew/bin`). The plugin calls v4.7-only flags like `--cascade`, `--draft-all`, `goto --search`, `pr stack`, `config export/import`, and `agent prompt --reset/--repo`; older CLIs fail at the call site with cryptic errors. Run `ezs upgrade` to refresh.
 - Optional: [telescope.nvim](https://github.com/nvim-telescope/telescope.nvim) for fuzzy pickers
 - Optional: [vim-fugitive](https://github.com/tpope/vim-fugitive) for auto-refresh on git operations
 
